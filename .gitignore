@@ -1,0 +1,7 @@
+.data
+.data/squad/*.jsonl
+.data/squad/*torch*
+data/torchtext
+__pycache__
+.vector_cache
+.ipynb_checkpoints
