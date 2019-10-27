@@ -1,3 +1,7 @@
+# Taken from : https://github.com/galsang/BiDAF-pytorch
+# All credits to @galsang 
+
+
 import json
 import os
 import nltk
@@ -15,7 +19,9 @@ def word_tokenize(tokens):
 
 
 class SQuAD():
-    def __init__(self, path, train_file, dev_file, vocab_max_size, train_samples, dev_samples):
+    def __init__(self, path, train_file, dev_file, 
+                 vocab_max_size, train_samples, dev_samples,
+                 train_batch_size, dev_batch_size):
         #path = '..data/squad'
         dataset_path = path + '/torchtext/'
         train_examples_path = dataset_path + 'train_examples.pt'
@@ -26,8 +32,8 @@ class SQuAD():
         self.context_threshold = 400
         self.word_dim = 100
         self.gpu = 0
-        self.train_batch_size = 16
-        self.dev_batch_size = 16
+        self.train_batch_size = train_batch_size
+        self.dev_batch_size = dev_batch_size
         self.train_samples = train_samples
         self.dev_samples = dev_samples
         

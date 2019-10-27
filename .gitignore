@@ -1,7 +1,16 @@
 .data
 .data/squad/*.jsonl
+data/
 .data/squad/*torch*
 data/torchtext
 __pycache__
 .vector_cache
 .ipynb_checkpoints
+img/
+EDA.ipynb
+arc.ipynb
+bidaf_pytorch.ipynb
+continue_training.ipynb
+saved_models/
+log_reg _ml.ipynb
+calculate_scores.py

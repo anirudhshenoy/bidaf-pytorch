@@ -53,43 +53,28 @@ class BiDAF(nn.Module):
                     nn.Sequential(Linear(self.hidden_size * 2, self.hidden_size * 2),
                                   nn.Sigmoid()))
 
-        # 3. Contextual Embedding Layer
-        self.context_LSTM = LSTM(input_size=self.hidden_size * 2,
-                                 hidden_size=self.hidden_size,
-                                 bidirectional=True,
-                                 batch_first=True,
-                                 dropout=self.dropout_rate)
+        # Transformer
+        self.transformer_encoder = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=200, nhead=4, dim_feedforward=512), num_layers=3)
 
         # 4. Attention Flow Layer
         self.att_weight_c = Linear(self.hidden_size * 2, 1)
         self.att_weight_q = Linear(self.hidden_size * 2, 1)
         self.att_weight_cq = Linear(self.hidden_size * 2, 1)
-
-        # 5. Modeling Layer
-        self.modeling_LSTM1 = LSTM(input_size=self.hidden_size * 8,
-                                   hidden_size=self.hidden_size,
-                                   bidirectional=True,
-                                   batch_first=True,
-                                   dropout=self.dropout_rate)
-
-        self.modeling_LSTM2 = LSTM(input_size=self.hidden_size * 2,
-                                   hidden_size=self.hidden_size,
-                                   bidirectional=True,
-                                   batch_first=True,
-                                   dropout=self.dropout_rate)
-
+        
+        # Modelling transformer
+        self.modelling_linear_layer = nn.Linear(600,200)
+        self.transformer_modeling = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=200, nhead=4, dim_feedforward=512), num_layers=3)
+        
+        
         # 6. Output Layer
         # No softmax applied here reason: https://stackoverflow.com/questions/57516027/does-pytorch-apply-softmax-automatically-in-nn-linear
-        self.p1_weight_g = Linear(self.hidden_size * 8, 1, dropout=self.dropout_rate)
+        self.p1_weight_g = Linear(self.hidden_size * 2, 1, dropout=self.dropout_rate)
         self.p1_weight_m = Linear(self.hidden_size * 2, 1, dropout=self.dropout_rate)
-        self.p2_weight_g = Linear(self.hidden_size * 8, 1, dropout=self.dropout_rate)
+        self.p2_weight_g = Linear(self.hidden_size * 2, 1, dropout=self.dropout_rate)
         self.p2_weight_m = Linear(self.hidden_size * 2, 1, dropout=self.dropout_rate)
 
-        self.output_LSTM = LSTM(input_size=self.hidden_size * 2,
-                                hidden_size=self.hidden_size,
-                                bidirectional=True,
-                                batch_first=True,
-                                dropout=self.dropout_rate)
+        #self.transformer_output = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=200, nhead=4, dim_feedforward=512), num_layers=3)
+
 
         self.dropout = nn.Dropout(p=self.dropout_rate)
 
@@ -175,10 +160,13 @@ class BiDAF(nn.Module):
             # q2c_att = torch.stack([q2c_att] * c_len, dim=1)
 
             # (batch, c_len, hidden_size * 8)
-            x = torch.cat([c, c2q_att, c * c2q_att, c * q2c_att], dim=-1)
+            concat_matrix = torch.cat([c, c2q_att, q2c_att], dim=-1)
+            x = self.modelling_linear_layer(concat_matrix)
+            #x = torch.cat([c, c2q_att, c * c2q_att, c * q2c_att], dim=-1)
             return x
 
-        def output_layer(g, m, l):
+        
+        def output_layer_transformer(g, m):
             """
             :param g: (batch, c_len, hidden_size * 8)
             :param m: (batch, c_len ,hidden_size * 2)
@@ -187,9 +175,9 @@ class BiDAF(nn.Module):
             # (batch, c_len)
             p1 = (self.p1_weight_g(g) + self.p1_weight_m(m)).squeeze()
             # (batch, c_len, hidden_size * 2)
-            m2 = self.output_LSTM((m, l))[0]
+            #m2 = self.transformer_output(m)
             # (batch, c_len)
-            p2 = (self.p2_weight_g(g) + self.p2_weight_m(m2)).squeeze()
+            p2 = (self.p2_weight_g(g) + self.p2_weight_m(m)).squeeze()
 
             return p1, p2
 
@@ -205,15 +193,42 @@ class BiDAF(nn.Module):
         # Highway network
         c = highway_network(c_char, c_word)
         q = highway_network(q_char, q_word)
+        
+        # Transformer 
+        
+        #print("context size : {}".format(c.size()))
+        #print("question size : {}".format(q.size()))
+        
+        c = self.transformer_encoder(c)
+        q = self.transformer_encoder(q)
+        #print("context size Transformer: {}".format(c_transform.size()))
+        #print("question size Transformer: {}".format(q_transform.size()))
+        
         # 3. Contextual Embedding Layer
-        c = self.context_LSTM((c, c_lens))[0]
-        q = self.context_LSTM((q, q_lens))[0]
+       
+        #c = self.context_LSTM((c, c_lens))[0]
+        #q = self.context_LSTM((q, q_lens))[0]
+        
+        #print("context size Embedding: {}".format(c.size()))
+        #print("question size Embedding: {}".format(q.size()))
+        
         # 4. Attention Flow Layer
         g = att_flow_layer(c, q)
         # 5. Modeling Layer
-        m = self.modeling_LSTM2((self.modeling_LSTM1((g, c_lens))[0], c_lens))[0]
+        #m = self.modeling_LSTM2((self.modeling_LSTM1((g, c_lens))[0], c_lens))[0]
+        m = self.transformer_modeling(g)
+
+        #print("Modelling shape: {}".format(m.size()))
+        #print("m_transform shape : {}".format(m_transform.size()))
+
         # 6. Output Layer
-        p1, p2 = output_layer(g, m, c_lens)
+        #p1, p2 = output_layer(g, m, c_lens)
+        p1, p2 = output_layer_transformer(g, m)
+
+        #print("p1_trans shape : {}".format(p1_trans.size()))
+        #print("p2_trans shape : {}".format(p2_trans.size()))
+
+
 
         # (batch, c_len), (batch, c_len)
         return p1, p2
