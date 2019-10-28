@@ -4,6 +4,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 
 from utils.nn import LSTM, Linear
 
@@ -54,7 +55,7 @@ class NormalConv(nn.Module):
         return F.relu(x)
     
 class EncoderBlock(nn.Module):
-    def __init__(self, number_convs, hidden_size, kernel_size, attn_heads = 8,  is_depthwise = False):
+    def __init__(self, number_convs, hidden_size, kernel_size, attn_heads = 8, encoder_hidden_layer_size = 512,  is_depthwise = False):
         super().__init__()
         if is_depthwise:
             self.convs = nn.ModuleList([DepthwiseSepConv(hidden_size, hidden_size, kernel_size) for _ in range(number_convs)])
@@ -63,7 +64,7 @@ class EncoderBlock(nn.Module):
             
         self.conv_layer_norms = nn.ModuleList([nn.LayerNorm(hidden_size) for _ in range(number_convs)])
         
-        self.transformer_encoder = nn.TransformerEncoderLayer(d_model=hidden_size, nhead = attn_heads)
+        self.transformer_encoder = nn.TransformerEncoderLayer(d_model=hidden_size, nhead = attn_heads, dim_feedforward = encoder_hidden_layer_size)
 
     def forward(self, x):
         x = PosEncoder(x)
@@ -100,8 +101,9 @@ class BiDAF(nn.Module):
                  char_dim = 8,
                  char_channel_width = 5,
                  char_channel_size = 100,
-                 dropout_rate = 0.2,
-                 hidden_size = 128):
+                 dropout_rate = 0.1,
+                 hidden_size = 128,
+                 encoder_hidden_layer_size = 512):
         
         super(BiDAF, self).__init__()
 
@@ -113,6 +115,7 @@ class BiDAF(nn.Module):
         self.char_vocab_size = char_vocab_size
         self.char_channel_size = char_channel_size
         self.word_vocab_size = word_vocab_size
+        self.encoder_hidden_layer_size = encoder_hidden_layer_size
 
         # 1. Character Embedding Layer
         self.char_emb = nn.Embedding(self.char_vocab_size, self.char_dim, padding_idx=1)
@@ -142,8 +145,8 @@ class BiDAF(nn.Module):
 
         # Transformer
         # TO DO ADD RESIDUAL CONNECTION
-        self.embedding_encoder_block = EncoderBlock(4, self.hidden_size, 7)
-        self.model_encoder_block = nn.ModuleList([EncoderBlock(2, self.hidden_size, 7) for _ in range(7)])
+        self.embedding_encoder_block = EncoderBlock(4, self.hidden_size, 7, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True)
+        self.model_encoder_block = nn.ModuleList([EncoderBlock(2, self.hidden_size, 5, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True) for _ in range(7)])
 
 
         # 4. Attention Flow Layer
