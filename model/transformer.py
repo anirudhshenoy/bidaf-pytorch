@@ -8,6 +8,29 @@ import torch.nn.functional as F
 from utils.nn import LSTM, Linear
 
 
+# https://github.com/andy840314/QANet-pytorch-/blob/master/models.py
+def PosEncoder(x, min_timescale=1.0, max_timescale=1.0e4):
+    length = x.size()[1]
+    channels = x.size()[2]
+    signal = get_timing_signal(length, channels, min_timescale, max_timescale)
+    return (x + signal.cuda())
+
+def get_timing_signal(length, channels, min_timescale=1.0, max_timescale=1.0e4):
+    position = torch.arange(length).type(torch.float32)
+    num_timescales = channels // 2
+    log_timescale_increment = (math.log(float(max_timescale) / float(min_timescale)) / (float(num_timescales)-1))
+    inv_timescales = min_timescale * torch.exp(
+            torch.arange(num_timescales).type(torch.float32) * -log_timescale_increment)
+    scaled_time = position.unsqueeze(1) * inv_timescales.unsqueeze(0)
+    signal = torch.cat([torch.sin(scaled_time), torch.cos(scaled_time)], dim = 1)
+    m = nn.ZeroPad2d((0, (channels % 2), 0, 0))
+    signal = m(signal)
+    signal = signal.view(1, length, channels)
+    return signal
+
+
+
+
 # https://discuss.pytorch.org/t/depthwise-and-separable-convolutions-in-pytorch/7315
 # https://stackoverflow.com/questions/56725660/how-does-the-groups-parameter-in-torch-nn-conv-influence-the-convolution-proces
 class DepthwiseSepConv(nn.Module):
@@ -43,6 +66,7 @@ class EncoderBlock(nn.Module):
         self.transformer_encoder = nn.TransformerEncoderLayer(d_model=hidden_size, nhead = attn_heads)
 
     def forward(self, x):
+        x = PosEncoder(x)
         for conv, layer_norm in zip(self.convs, self.conv_layer_norms):
             residual = x
             x = layer_norm(x)
@@ -108,10 +132,10 @@ class BiDAF(nn.Module):
         # Create 2 hidden layers 
         for i in range(2):
             setattr(self, 'highway_linear' + str(i),
-                    nn.Sequential(Linear(self.hidden_size, self.hidden_size),
+                    nn.Sequential(ResizeConv(self.hidden_size, self.hidden_size),
                                   nn.ReLU()))
             setattr(self, 'highway_gate' + str(i),
-                    nn.Sequential(Linear(self.hidden_size, self.hidden_size),
+                    nn.Sequential(ResizeConv(self.hidden_size, self.hidden_size),
                                   nn.Sigmoid()))
             
         # Embedding Conv
@@ -123,9 +147,9 @@ class BiDAF(nn.Module):
 
 
         # 4. Attention Flow Layer
-        self.att_weight_c = Linear(self.hidden_size, 1)
-        self.att_weight_q = Linear(self.hidden_size, 1)
-        self.att_weight_cq = Linear(self.hidden_size, 1)
+        self.att_weight_c = ResizeConv(self.hidden_size, 1)
+        self.att_weight_q = ResizeConv(self.hidden_size, 1)
+        self.att_weight_cq = ResizeConv(self.hidden_size, 1)
         
         # Modelling transformer
         self.resize_g_matrix = ResizeConv(self.hidden_size * 4 , self.hidden_size)
@@ -133,8 +157,8 @@ class BiDAF(nn.Module):
         
         # 6. Output Layer
         # No softmax applied here reason: https://stackoverflow.com/questions/57516027/does-pytorch-apply-softmax-automatically-in-nn-linear
-        self.p1_weight_g = Linear(self.hidden_size * 2, 1, dropout=self.dropout_rate)
-        self.p2_weight_g = Linear(self.hidden_size * 2, 1, dropout=self.dropout_rate)
+        self.p1_weight_g = ResizeConv(self.hidden_size * 2, 1)
+        self.p2_weight_g = ResizeConv(self.hidden_size * 2, 1)
 
         #self.transformer_output = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=200, nhead=4, dim_feedforward=512), num_layers=3)
 
