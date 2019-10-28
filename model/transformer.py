@@ -76,6 +76,7 @@ class EncoderBlock(nn.Module):
             
             # Residual Connection
             x = x + residual
+            x = self.dropout(x)
             
         # Encoder input is (seq_len, batch_size, embed_dim)
         x = self.transformer_encoder(x.permute(1,0,2)).permute(1,0,2)
@@ -199,6 +200,7 @@ class BiDAF(nn.Module):
             for i in range(2):
                 h = getattr(self, 'highway_linear' + str(i))(x)
                 g = getattr(self, 'highway_gate' + str(i))(x)
+                g = self.dropout(g)
                 x = g * h + (1 - g) * x
             # (batch, seq_len, hidden_size * 2)
             return x
@@ -264,6 +266,9 @@ class BiDAF(nn.Module):
         # 2. Word Embedding Layer
         c_word = self.word_emb(batch.c_word[0])
         q_word = self.word_emb(batch.q_word[0])
+        c_word = self.dropout(c_word)
+        q_word = self.dropout(q_word)
+        
         c_lens = batch.c_word[1]
         q_lens = batch.q_word[1]
 
