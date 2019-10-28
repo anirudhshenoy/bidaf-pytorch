@@ -87,12 +87,23 @@ class EncoderBlock(nn.Module):
     
 class ResizeConv(nn.Module):
     # To reduce word dim to hidden size of model
-    def __init__(self, embed_dim, hidden_size):
+    def __init__(self, embed_dim, hidden_size, activation = False, bias = False):
         super().__init__()
-        self.conv = nn.Conv1d(embed_dim, hidden_size, kernel_size = 1)
+        self.conv = nn.Conv1d(embed_dim, hidden_size, kernel_size = 1, bias = bias)
+        
+        if activation:   
+            self.activation = True
+            nn.init.kaiming_normal_(self.conv.weight, nonlinearity='relu')
+        else:
+            self.activation = False
+            nn.init.xavier_uniform_(self.conv.weight)
+
         
     def forward(self, x):
         x = self.conv(x.transpose(1,2)).transpose(1,2)
+        
+        if self.activation:
+            x = F.relu(x)
         return x
     
     
@@ -140,10 +151,10 @@ class BiDAF(nn.Module):
         # Create 2 hidden layers 
         for i in range(2):
             setattr(self, 'highway_linear' + str(i),
-                    nn.Sequential(ResizeConv(self.hidden_size, self.hidden_size),
+                    nn.Sequential(ResizeConv(self.hidden_size, self.hidden_size, bias = True),
                                   nn.ReLU()))
             setattr(self, 'highway_gate' + str(i),
-                    nn.Sequential(ResizeConv(self.hidden_size, self.hidden_size),
+                    nn.Sequential(ResizeConv(self.hidden_size, self.hidden_size, bias = True),
                                   nn.Sigmoid()))
             
         # Embedding Conv
@@ -258,9 +269,12 @@ class BiDAF(nn.Module):
             :return: p1: (batch, c_len), p2: (batch, c_len)
             """
             # (batch, c_len)
-            p1 = self.p1_weight_g(torch.cat([m0, m1], dim = 1)).squeeze()
+            p1 = self.p1_weight_g(torch.cat([m0, m1], dim = 1))
+            p1 = self.dropout(p1).squeeze()
             # (batch, c_len)
-            p2 = self.p2_weight_g(torch.cat([m0, m2], dim = 1)).squeeze()
+            p2 = self.p2_weight_g(torch.cat([m0, m2], dim = 1))
+            p2 = self.dropout(p2).squeeze()
+
 
             return p1, p2
 
