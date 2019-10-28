@@ -65,6 +65,9 @@ class EncoderBlock(nn.Module):
         self.conv_layer_norms = nn.ModuleList([nn.LayerNorm(hidden_size) for _ in range(number_convs)])
         
         self.transformer_encoder = nn.TransformerEncoderLayer(d_model=hidden_size, nhead = attn_heads, dim_feedforward = encoder_hidden_layer_size)
+        
+        self.dropout = nn.Dropout(p=0.1)
+
 
     def forward(self, x):
         x = PosEncoder(x)
@@ -291,7 +294,7 @@ class BiDAF(nn.Module):
         
         #print("G matrix size: {}".format(g.size()))
         
-        enc_op_0 = g
+        enc_op_0 = self.dropout(g)
         for model_enc in self.model_encoder_block:
             enc_op_0 = model_enc(enc_op_0)
         #print("model_op 0 size: {}".format(enc_op_0.size()))

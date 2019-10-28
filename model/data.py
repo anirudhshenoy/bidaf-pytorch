@@ -88,7 +88,7 @@ class SQuAD():
 
         print("building vocab...")
         self.CHAR.build_vocab(self.train, self.dev)
-        self.WORD.build_vocab(self.train, self.dev, max_size = vocab_max_size,  vectors=GloVe(name='6B', dim=self.word_dim))
+        self.WORD.build_vocab(self.train, self.dev, max_size = vocab_max_size,  vectors=GloVe(name='840B', dim=self.word_dim))
 
         print("building iterators...")
         device = torch.device(f"cuda:{self.gpu}" if torch.cuda.is_available() else "cpu")
