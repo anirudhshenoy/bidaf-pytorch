@@ -14,3 +14,4 @@ continue_training.ipynb
 saved_models/
 log_reg _ml.ipynb
 calculate_scores.py
+data/*.jsonl

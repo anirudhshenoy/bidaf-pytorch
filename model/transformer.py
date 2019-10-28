@@ -132,7 +132,8 @@ class BiDAF(nn.Module):
         # Freeze layer to prevent gradient update
         self.word_emb = nn.Embedding.from_pretrained(pretrained, freeze=True)
         
-        self.emb_conv = ResizeConv(self.word_dim + self.char_channel_size , self.hidden_size)
+        self.question_resize = ResizeConv(self.word_dim + self.char_channel_size , self.hidden_size)
+        self.context_resize = ResizeConv(self.word_dim + self.char_channel_size , self.hidden_size)
 
         # highway network
         #assert (self.hidden_size * 2) == (self.char_channel_size + self.word_dim)
@@ -149,7 +150,8 @@ class BiDAF(nn.Module):
 
         # Transformer
         self.embedding_encoder_block = EncoderBlock(4, self.hidden_size, 7, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True)
-        self.model_encoder_block = nn.ModuleList([EncoderBlock(2, self.hidden_size, 5, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True) for _ in range(7)])
+        
+        self.model_encoder_block = nn.ModuleList([EncoderBlock(2, self.hidden_size, 5, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True) for _ in range(7)] )
 
 
         # 4. Attention Flow Layer
@@ -163,8 +165,8 @@ class BiDAF(nn.Module):
         
         # 6. Output Layer
         # No softmax applied here reason: https://stackoverflow.com/questions/57516027/does-pytorch-apply-softmax-automatically-in-nn-linear
-        self.p1_weight_g = ResizeConv(self.hidden_size * 2, 1)
-        self.p2_weight_g = ResizeConv(self.hidden_size * 2, 1)
+        self.p1_weight_g = ResizeConv(self.hidden_size, 1)
+        self.p2_weight_g = ResizeConv(self.hidden_size, 1)
 
         #self.transformer_output = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=200, nhead=4, dim_feedforward=512), num_layers=3)
 
@@ -191,15 +193,14 @@ class BiDAF(nn.Module):
 
             return x
 
-        def highway_network(x1, x2):
+        def highway_network(x):
             """
             :param x1: (batch, seq_len, char_channel_size)
             :param x2: (batch, seq_len, word_dim)
             :return: (batch, seq_len, hidden_size * 2)
             """
             # (batch, seq_len, char_channel_size + word_dim)
-            x = torch.cat([x1, x2], dim=-1)
-            x = self.emb_conv(x)
+            
             for i in range(2):
                 h = getattr(self, 'highway_linear' + str(i))(x)
                 g = getattr(self, 'highway_gate' + str(i))(x)
@@ -245,7 +246,7 @@ class BiDAF(nn.Module):
             q2c_att = q2c_att.unsqueeze(1).expand(-1, c_len, -1)
             # q2c_att = torch.stack([q2c_att] * c_len, dim=1)
             
-            x = torch.cat([c, c2q_att, c * c2q_att, c * q2c_att], dim=-1)
+            x = torch.cat([c, c2q_att, c * c2q_att, c * q2c_att], dim=2)
             x = self.resize_g_matrix(x)
             return x
 
@@ -257,9 +258,9 @@ class BiDAF(nn.Module):
             :return: p1: (batch, c_len), p2: (batch, c_len)
             """
             # (batch, c_len)
-            p1 = self.p1_weight_g(torch.cat([m0, m1], dim = -1)).squeeze()
+            p1 = self.p1_weight_g(torch.cat([m0, m1], dim = 1)).squeeze()
             # (batch, c_len)
-            p2 = self.p2_weight_g(torch.cat([m0, m2], dim = -1)).squeeze()
+            p2 = self.p2_weight_g(torch.cat([m0, m2], dim = 1)).squeeze()
 
             return p1, p2
 
@@ -276,8 +277,12 @@ class BiDAF(nn.Module):
         q_lens = batch.q_word[1]
 
         # Highway network
-        c = highway_network(c_char, c_word)
-        q = highway_network(q_char, q_word)
+        c = self.context_resize(torch.cat([c_char, c_word], dim=-1))
+        q = self.question_resize(torch.cat([q_char, q_word], dim=-1))
+        
+    
+        c = highway_network(c)
+        q = highway_network(q)
         
         # Transformer 
         
@@ -294,26 +299,24 @@ class BiDAF(nn.Module):
         
         #print("G matrix size: {}".format(g.size()))
         
-        enc_op_0 = self.dropout(g)
+        M0 = self.dropout(g)
         for model_enc in self.model_encoder_block:
-            enc_op_0 = model_enc(enc_op_0)
+            M0 = model_enc(M0)
         #print("model_op 0 size: {}".format(enc_op_0.size()))
         
-        
-        enc_op_1 = enc_op_0
+        M1 = M0
         for model_enc in self.model_encoder_block:
-            enc_op_1 = model_enc(enc_op_1)
+            M0 = model_enc(M0)
         #print("model_op 1 size: {}".format(enc_op_1.size()))
         
-        
-        enc_op_2 = enc_op_1
+        M2 = self.dropout(M0)
         for model_enc in self.model_encoder_block:
-            enc_op_2 = model_enc(enc_op_2)
+            M0 = model_enc(M0)
         #print("model_op 2 size: {}".format(enc_op_2.size()))
 
-
+        M3 = M0
         # 6. Output Layer
-        p1, p2 = output_layer(enc_op_0, enc_op_1, enc_op_2)
+        p1, p2 = output_layer(M1, M2, M3)
 
         #print("p1 shape : {}".format(p1.size()))
         #print("p2 shape : {}".format(p2.size()))

@@ -21,7 +21,7 @@ def word_tokenize(tokens):
 class SQuAD():
     def __init__(self, path, train_file, dev_file, 
                  vocab_max_size, train_samples, dev_samples,
-                 train_batch_size, dev_batch_size, word_dim = 100):
+                 train_batch_size, dev_batch_size, word_dim = 100, glove_tokens = '840B'):
         #path = '..data/squad'
         dataset_path = path + '/torchtext/'
         train_examples_path = dataset_path + 'train_examples.pt'
@@ -36,6 +36,7 @@ class SQuAD():
         self.dev_batch_size = dev_batch_size
         self.train_samples = train_samples
         self.dev_samples = dev_samples
+        self.glove_tokens = glove_tokens
         
         print("preprocessing data files...")
         if not os.path.exists(path + '/' + self.train_file + 'l'):
@@ -88,7 +89,7 @@ class SQuAD():
 
         print("building vocab...")
         self.CHAR.build_vocab(self.train, self.dev)
-        self.WORD.build_vocab(self.train, self.dev, max_size = vocab_max_size,  vectors=GloVe(name='840B', dim=self.word_dim))
+        self.WORD.build_vocab(self.train, self.dev, max_size = vocab_max_size,  vectors=GloVe(name= self.glove_tokens, dim=self.word_dim))
 
         print("building iterators...")
         device = torch.device(f"cuda:{self.gpu}" if torch.cuda.is_available() else "cpu")
