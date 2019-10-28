@@ -37,7 +37,7 @@ def get_timing_signal(length, channels, min_timescale=1.0, max_timescale=1.0e4):
 class DepthwiseSepConv(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_size):
         super().__init__()
-        self.depth = nn.Conv1d(in_channels, out_channels, kernel_size, groups = in_channels)
+        self.depth = nn.Conv1d(in_channels, in_channels, kernel_size, groups = in_channels, padding = kernel_size//2)
         self.point = nn.Conv1d(in_channels, out_channels, 1, padding = 0)
         
     def forward(self, x):
@@ -144,7 +144,6 @@ class BiDAF(nn.Module):
         # Embedding Conv
 
         # Transformer
-        # TO DO ADD RESIDUAL CONNECTION
         self.embedding_encoder_block = EncoderBlock(4, self.hidden_size, 7, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True)
         self.model_encoder_block = nn.ModuleList([EncoderBlock(2, self.hidden_size, 5, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True) for _ in range(7)])
 
@@ -281,10 +280,7 @@ class BiDAF(nn.Module):
         q = self.embedding_encoder_block(q)
         #print("context size after encoder block: {}".format(c.size()))
         #print("question size after encoder block: {}".format(q.size()))
-
-        #print("context size Embedding: {}".format(c.size()))
-        #print("question size Embedding: {}".format(q.size()))
-        
+    
         # 4. Attention Flow Layer
         g = att_flow_layer(c, q)
         
