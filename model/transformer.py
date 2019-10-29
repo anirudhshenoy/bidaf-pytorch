@@ -57,8 +57,10 @@ class NormalConv(nn.Module):
         return F.relu(x)
     
 class EncoderBlock(nn.Module):
-    def __init__(self, number_convs, hidden_size, kernel_size, attn_heads = 8, encoder_hidden_layer_size = 512,  is_depthwise = False):
+    def __init__(self, number_convs, hidden_size, kernel_size, dropout, attn_heads = 8, encoder_hidden_layer_size = 512,  is_depthwise = False):
         super().__init__()
+        self.dropout_rate = dropout
+        self.number_convs = number_convs
         if is_depthwise:
             self.convs = nn.ModuleList([DepthwiseSepConv(hidden_size, hidden_size, kernel_size) for _ in range(number_convs)])
         else:
@@ -71,21 +73,40 @@ class EncoderBlock(nn.Module):
         self.dropout = nn.Dropout(p=0.1)
 
 
-    def forward(self, x, mask):
+    def forward(self, x, mask, l, blks):
+        total_layers = (self.number_convs+1)*blks
+
         x = PosEncoder(x)
+        i = 0
         for conv, layer_norm in zip(self.convs, self.conv_layer_norms):
             residual = x
             x = layer_norm(x)
+            
+            if (i % 2) == 0 :
+                x = F.dropout(x, p=self.dropout_rate, training=self.training)
             # Conv input is (batch_size, embed_dim, seq_len)
             x = conv(x.transpose(1,2)).transpose(1,2)
             
             # Residual Connection
-            x = x + residual
-            x = self.dropout(x)
+            #x = x + residual
+            x = self.layer_dropout(x, residual, self.dropout_rate*float(l)/total_layers)
+            l += 1
+            i += 1
             
         # Encoder input is (seq_len, batch_size, embed_dim)
         x = self.transformer_encoder(x.permute(1,0,2), src_key_padding_mask = mask).permute(1,0,2)
         return x
+    
+    def layer_dropout(self, inputs, residual, dropout):
+        if self.training == True:
+            pred = torch.empty(1).uniform_(0,1) < dropout
+            if pred:
+                return residual
+            else:
+                return F.dropout(inputs, dropout, training=self.training) + residual
+        else:
+            return inputs + residual
+
     
 class ResizeConv(nn.Module):
     # To reduce word dim to hidden size of model
@@ -115,7 +136,7 @@ class BiDAF(nn.Module):
                  word_vocab_size,
                  pretrained,
                  word_dim = 100,
-                 char_dim = 8,
+                 char_dim = 16,
                  char_channel_width = 5,
                  char_channel_size = 100,
                  dropout_rate = 0.1,
@@ -162,9 +183,9 @@ class BiDAF(nn.Module):
         # Embedding Conv
 
         # Transformer
-        self.embedding_encoder_block = EncoderBlock(4, self.hidden_size, 7, attn_heads = 1, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True)
+        self.embedding_encoder_block = EncoderBlock(4, self.hidden_size, 7, self.dropout_rate, attn_heads = 1, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True)
         
-        self.model_encoder_block = nn.ModuleList([EncoderBlock(2, self.hidden_size, 5, attn_heads = 1, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True) for _ in range(7)] )
+        self.model_encoder_block = nn.ModuleList([EncoderBlock(2, self.hidden_size, 5, self.dropout_rate, attn_heads = 1, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True) for _ in range(7)] )
 
 
         # 4. Attention Flow Layer
@@ -258,7 +279,8 @@ class BiDAF(nn.Module):
             ### (batch, c_len, q_len)
             #cq = torch.stack(cq, dim=-1)
             
-            
+            c = self.dropout(c)
+            q = self.dropout(q)
             
             cq = torch.matmul(c * self.att_weight_cq, q.transpose(1,2))
             s_sub_1 = torch.matmul(c, self.att_weight_c).expand(-1, -1, q_len)
@@ -336,8 +358,8 @@ class BiDAF(nn.Module):
         #print("context size after highway: {}".format(c.size()))
         #print("question size after highway : {}".format(q.size()))
         
-        c = self.embedding_encoder_block(c, c_mask)
-        q = self.embedding_encoder_block(q, q_mask)
+        c = self.embedding_encoder_block(c, c_mask, 1, 1)
+        q = self.embedding_encoder_block(q, q_mask, 1, 1)
         #print("context size after encoder block: {}".format(c.size()))
         #print("question size after encoder block: {}".format(q.size()))
     
@@ -347,18 +369,18 @@ class BiDAF(nn.Module):
         #print("G matrix size: {}".format(g.size()))
         
         M0 = self.dropout(g)
-        for model_enc in self.model_encoder_block:
-            M0 = model_enc(M0, c_mask)
+        for i, model_enc in enumerate(self.model_encoder_block):
+            M0 = model_enc(M0, c_mask, i*(2+2)+1, 7)
         #print("model_op 0 size: {}".format(enc_op_0.size()))
         
         M1 = M0
-        for model_enc in self.model_encoder_block:
-            M0 = model_enc(M0, c_mask)
+        for i, model_enc in enumerate(self.model_encoder_block):
+            M0 = model_enc(M0, c_mask, i*(2+2)+1, 7)
         #print("model_op 1 size: {}".format(enc_op_1.size()))
         
         M2 = self.dropout(M0)
-        for model_enc in self.model_encoder_block:
-            M0 = model_enc(M0, c_mask)
+        for i, model_enc in enumerate(self.model_encoder_block):
+            M0 = model_enc(M0, c_mask, i*(2+2)+1, 7)
         #print("model_op 2 size: {}".format(enc_op_2.size()))
 
         M3 = M0
@@ -376,3 +398,6 @@ class BiDAF(nn.Module):
 def mask_logits(inputs, mask):
     mask = mask.type(torch.float32)
     return inputs + (-1e30) * (mask)
+
+
+
