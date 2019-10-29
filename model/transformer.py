@@ -178,8 +178,8 @@ class BiDAF(nn.Module):
         
         # 6. Output Layer
         # No softmax applied here reason: https://stackoverflow.com/questions/57516027/does-pytorch-apply-softmax-automatically-in-nn-linear
-        self.p1_weight_g = ResizeConv(self.hidden_size, 1)
-        self.p2_weight_g = ResizeConv(self.hidden_size, 1)
+        self.p1_weight_g = ResizeConv(self.hidden_size *2, 1)
+        self.p2_weight_g = ResizeConv(self.hidden_size *2, 1)
 
         #self.transformer_output = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=200, nhead=4, dim_feedforward=512), num_layers=3)
 
@@ -228,6 +228,8 @@ class BiDAF(nn.Module):
             :param q: (batch, q_len, hidden_size * 2)
             :return: (batch, c_len, q_len)
             """
+            
+            # Add bias ? 
             c_len = c.size(1)
             q_len = q.size(1)
 
@@ -264,18 +266,19 @@ class BiDAF(nn.Module):
             return x
 
         
-        def output_layer(m0, m1, m2):
+        def output_layer(m0, m1, m2, mask):
             """
             :param g: (batch, c_len, hidden_size * 8)
             :param m: (batch, c_len ,hidden_size * 2)
             :return: p1: (batch, c_len), p2: (batch, c_len)
             """
             # (batch, c_len)
-            p1 = self.p1_weight_g(torch.cat([m0, m1], dim = 1))
-            p1 = self.dropout(p1).squeeze()
+
+            p1 = self.p1_weight_g(torch.cat([m0, m1], dim = 2)).squeeze()
             # (batch, c_len)
-            p2 = self.p2_weight_g(torch.cat([m0, m2], dim = 1))
-            p2 = self.dropout(p2).squeeze()
+            p2 = self.p2_weight_g(torch.cat([m0, m2], dim = 2)).squeeze()
+            p1 = mask_logits(p1, mask)
+            p2 = mask_logits(p2, mask)
 
 
             return p1, p2
@@ -313,6 +316,9 @@ class BiDAF(nn.Module):
         #print("question size after encoder block: {}".format(q.size()))
     
         # 4. Attention Flow Layer
+        
+        print(c.size())
+        print(q.size())
         g = att_flow_layer(c, q)
         
         #print("G matrix size: {}".format(g.size()))
@@ -334,7 +340,7 @@ class BiDAF(nn.Module):
 
         M3 = M0
         # 6. Output Layer
-        p1, p2 = output_layer(M1, M2, M3)
+        p1, p2 = output_layer(M1, M2, M3, c_mask)
 
         #print("p1 shape : {}".format(p1.size()))
         #print("p2 shape : {}".format(p2.size()))
@@ -343,3 +349,7 @@ class BiDAF(nn.Module):
 
         # (batch, c_len), (batch, c_len)
         return p1, p2
+
+def mask_logits(inputs, mask):
+    mask = mask.type(torch.float32)
+    return inputs + (-1e30) * (mask)
