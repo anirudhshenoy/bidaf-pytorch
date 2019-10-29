@@ -11,12 +11,12 @@ from utils.nn import LSTM, Linear
 
 # https://github.com/andy840314/QANet-pytorch-/blob/master/models.py
 def PosEncoder(x, min_timescale=1.0, max_timescale=1.0e4):
-    x = x.transpose(1,2)
+    #x = x.transpose(1,2)
 
     length = x.size()[1]
     channels = x.size()[2]
     signal = get_timing_signal(length, channels, min_timescale, max_timescale)
-    return (x + signal.cuda()).transpose(1,2)
+    return (x + signal.cuda())#.transpose(1,2)
 
 def get_timing_signal(length, channels, min_timescale=1.0, max_timescale=1.0e4):
     position = torch.arange(length).type(torch.float32)
@@ -68,45 +68,56 @@ class EncoderBlock(nn.Module):
             
         self.conv_layer_norms = nn.ModuleList([nn.LayerNorm(hidden_size) for _ in range(number_convs)])
         
-        self.transformer_encoder = nn.TransformerEncoderLayer(d_model=hidden_size, nhead = attn_heads, dim_feedforward = encoder_hidden_layer_size)
+        #self.transformer_encoder = nn.TransformerEncoderLayer(d_model=hidden_size, nhead = attn_heads, dim_feedforward = encoder_hidden_layer_size)
+        self.FFN_1 = ResizeConv(hidden_size, hidden_size, activation = True, bias = True)
         
-        self.dropout = nn.Dropout(p=0.1)
+        # FFN_2 activation required ? 
+        self.FFN_2 = ResizeConv(hidden_size, hidden_size, activation = True, bias=True)
+        self.norm_1 = nn.LayerNorm(hidden_size)
+        self.norm_2 = nn.LayerNorm(hidden_size)
+        
+        self.multihead_attn = nn.MultiheadAttention(hidden_size, attn_heads)
+
+        self.dropout = nn.Dropout(p = dropout)
+        self.spatial_dropout = nn.Dropout3d(p = dropout)
 
 
-    def forward(self, x, mask, l, blks):
-        total_layers = (self.number_convs+1)*blks
 
+    def forward(self, x, mask):
         x = PosEncoder(x)
         i = 0
         for conv, layer_norm in zip(self.convs, self.conv_layer_norms):
             residual = x
             x = layer_norm(x)
             
+            ## Dropout between every 2 layers? Probably not needed here. 
             if (i % 2) == 0 :
-                x = F.dropout(x, p=self.dropout_rate, training=self.training)
+                x = self.dropout(x)
             # Conv input is (batch_size, embed_dim, seq_len)
             x = conv(x.transpose(1,2)).transpose(1,2)
             
             # Residual Connection
-            #x = x + residual
-            x = self.layer_dropout(x, residual, self.dropout_rate*float(l)/total_layers)
-            l += 1
+            x = self.spatial_dropout(x) + residual
             i += 1
             
         # Encoder input is (seq_len, batch_size, embed_dim)
-        x = self.transformer_encoder(x.permute(1,0,2), src_key_padding_mask = mask).permute(1,0,2)
-        return x
-    
-    def layer_dropout(self, inputs, residual, dropout):
-        if self.training == True:
-            pred = torch.empty(1).uniform_(0,1) < dropout
-            if pred:
-                return residual
-            else:
-                return F.dropout(inputs, dropout, training=self.training) + residual
-        else:
-            return inputs + residual
+        residual = x
+        x = self.norm_1(x)
+        x = self.dropout(x)
+        x = x.permute(1,0,2)
+        # Self Attention
+        x = self.multihead_attn(x, x, x, key_padding_mask = mask)[0].permute(1,0,2)
+        x = self.spatial_dropout(x) + residual
+        
 
+        residual = x
+        x = self.norm_2(x)
+        x = self.dropout(x)
+        x = self.FFN_1(x)
+        x = self.FFN_2(x)
+        x = self.spatial_dropout(x) + residual
+        
+        return x
     
 class ResizeConv(nn.Module):
     # To reduce word dim to hidden size of model
@@ -141,7 +152,8 @@ class BiDAF(nn.Module):
                  char_channel_size = 100,
                  dropout_rate = 0.1,
                  hidden_size = 128,
-                 encoder_hidden_layer_size = 512):
+                 encoder_hidden_layer_size = 512,
+                 attn_heads = 1):
         
         super(BiDAF, self).__init__()
 
@@ -162,7 +174,6 @@ class BiDAF(nn.Module):
         self.char_conv = nn.Conv2d(1, self.char_channel_size, (self.char_dim, self.char_channel_width))
 
         # 2. Word Embedding Layer
-        # initialize word embedding with GloVe
         # Freeze layer to prevent gradient update
         self.word_emb = nn.Embedding.from_pretrained(pretrained, freeze=True)
         
@@ -183,10 +194,15 @@ class BiDAF(nn.Module):
         # Embedding Conv
 
         # Transformer
-        self.embedding_encoder_block = EncoderBlock(4, self.hidden_size, 7, self.dropout_rate, attn_heads = 1, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True)
+        self.embedding_encoder_block = EncoderBlock(4, self.hidden_size, 7, self.dropout_rate, attn_heads = attn_heads, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True)
         
-        self.model_encoder_block = nn.ModuleList([EncoderBlock(2, self.hidden_size, 5, self.dropout_rate, attn_heads = 1, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True) for _ in range(7)] )
+        self.model_encoder_block = nn.ModuleList([EncoderBlock(2, self.hidden_size, 5, self.dropout_rate, attn_heads = attn_heads, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True) for _ in range(7)] )
 
+        #self.embedding_encoder_block = EncoderBlockOLD(conv_num=4, ch_num=D, k=7)
+        
+        #self.model_encoder_block = nn.ModuleList([EncoderBlockOLD(conv_num=2, ch_num=D, k=5) for _ in range(7)] )
+
+        
 
         # 4. Attention Flow Layer
         self.att_weight_c = torch.empty(self.hidden_size, 1)
@@ -212,9 +228,10 @@ class BiDAF(nn.Module):
         self.p1_weight_g = ResizeConv(self.hidden_size *2, 1)
         self.p2_weight_g = ResizeConv(self.hidden_size *2, 1)
 
-        #self.transformer_output = nn.TransformerEncoder(nn.TransformerEncoderLayer(d_model=200, nhead=4, dim_feedforward=512), num_layers=3)
 
         self.dropout = nn.Dropout(p=self.dropout_rate)
+        self.dropout_char = nn.Dropout(p= 0.05)
+
 
     def forward(self, batch):
         # TODO: More memory-efficient architecture
@@ -235,6 +252,7 @@ class BiDAF(nn.Module):
             # (batch, seq_len, char_channel_size)
             x = x.view(batch_size, -1, self.char_channel_size)
 
+            x = self.dropout_char(x)
             return x
 
         def highway_network(x):
@@ -268,16 +286,6 @@ class BiDAF(nn.Module):
             
             batch_size = c.size(0)
 
-            # CALCULATE SIMILARITY MATRIX
-            #cq = []
-            #for i in range(q_len):
-            #    #(batch, 1, hidden_size * 2)
-            #    qi = q.select(1, i).unsqueeze(1)
-            #    #(batch, c_len, 1)
-            #    ci = self.att_weight_cq(c * qi).squeeze()
-            #    cq.append(ci)
-            ### (batch, c_len, q_len)
-            #cq = torch.stack(cq, dim=-1)
             
             c = self.dropout(c)
             q = self.dropout(q)
@@ -300,13 +308,6 @@ class BiDAF(nn.Module):
 
             # (batch, c_len, q_len) * (batch, q_len, hidden_size * 2) -> (batch, c_len, hidden_size * 2)
             c2q_att = torch.bmm(S1, q)
-            # (batch, 1, c_len)
-            #b = F.softmax(torch.max(s, dim=2)[0], dim=1).unsqueeze(1)
-            # (batch, 1, c_len) * (batch, c_len, hidden_size * 2) -> (batch, hidden_size * 2)
-            #q2c_att = torch.bmm(b, c).squeeze()
-            # (batch, c_len, hidden_size * 2) (tiled)
-            #q2c_att = q2c_att.unsqueeze(1).expand(-1, c_len, -1)
-            # q2c_att = torch.stack([q2c_att] * c_len, dim=1)
             q2c_att = torch.bmm(torch.bmm(S1, S2.transpose(1, 2)), c)
             
             x = torch.cat([c, c2q_att, c * c2q_att, c * q2c_att], dim=2)
@@ -334,6 +335,8 @@ class BiDAF(nn.Module):
         # 1. Character Embedding Layer
         c_char = char_emb_layer(batch.c_char)
         q_char = char_emb_layer(batch.q_char)
+        
+        
         # 2. Word Embedding Layer
         c_mask = torch.ones_like(batch.c_word[0]) == batch.c_word[0]
         q_mask = torch.ones_like(batch.q_word[0]) == batch.q_word[0]
@@ -358,8 +361,8 @@ class BiDAF(nn.Module):
         #print("context size after highway: {}".format(c.size()))
         #print("question size after highway : {}".format(q.size()))
         
-        c = self.embedding_encoder_block(c, c_mask, 1, 1)
-        q = self.embedding_encoder_block(q, q_mask, 1, 1)
+        c = self.embedding_encoder_block(c, c_mask)
+        q = self.embedding_encoder_block(q, q_mask)
         #print("context size after encoder block: {}".format(c.size()))
         #print("question size after encoder block: {}".format(q.size()))
     
@@ -370,27 +373,22 @@ class BiDAF(nn.Module):
         
         M0 = self.dropout(g)
         for i, model_enc in enumerate(self.model_encoder_block):
-            M0 = model_enc(M0, c_mask, i*(2+2)+1, 7)
+            M0 = model_enc(M0, c_mask)
         #print("model_op 0 size: {}".format(enc_op_0.size()))
         
         M1 = M0
         for i, model_enc in enumerate(self.model_encoder_block):
-            M0 = model_enc(M0, c_mask, i*(2+2)+1, 7)
+            M0 = model_enc(M0, c_mask)
         #print("model_op 1 size: {}".format(enc_op_1.size()))
         
         M2 = self.dropout(M0)
         for i, model_enc in enumerate(self.model_encoder_block):
-            M0 = model_enc(M0, c_mask, i*(2+2)+1, 7)
+            M0 = model_enc(M0, c_mask)
         #print("model_op 2 size: {}".format(enc_op_2.size()))
 
         M3 = M0
         # 6. Output Layer
         p1, p2 = output_layer(M1, M2, M3, c_mask)
-
-        #print("p1 shape : {}".format(p1.size()))
-        #print("p2 shape : {}".format(p2.size()))
-
-
 
         # (batch, c_len), (batch, c_len)
         return p1, p2
@@ -401,3 +399,76 @@ def mask_logits(inputs, mask):
 
 
 
+######### DELETE BELOW #########
+
+"""
+
+D = 96
+Nh = 1
+Dword = 100
+Dchar = 16
+batch_size = 3
+dropout = 0.1
+dropout_char = 0.05
+
+
+
+
+class EncoderBlockOLD(nn.Module):
+    def __init__(self, conv_num: int, ch_num: int, k: int):
+        super().__init__()
+        self.convs = nn.ModuleList([DepthwiseSepConv(ch_num, ch_num, k) for _ in range(conv_num)])
+        self.self_att = SelfAttention()
+        self.FFN_1 = ResizeConv(ch_num, ch_num, activation=True, bias=True)
+        self.FFN_2 = ResizeConv(ch_num, ch_num, bias=True)
+        self.norm_C = nn.ModuleList([nn.LayerNorm(D) for _ in range(conv_num)])
+        self.norm_1 = nn.LayerNorm(D)
+        self.norm_2 = nn.LayerNorm(D)
+        #self.transformer_encoder = nn.TransformerEncoderLayer(d_model=D, nhead = 1, dim_feedforward = 512)
+        self.multihead_attn = nn.MultiheadAttention(96, 1)
+        self.conv_num = conv_num
+        self.spatial_dropout = nn.Dropout3d(p=0.2)
+        
+    def forward(self, x, mask, l, blks):
+        total_layers = (self.conv_num+1)*blks
+        out = PosEncoder(x)
+        for i, conv in enumerate(self.convs):
+            res = out
+            out = self.norm_C[i](out)
+            if (i) % 2 == 0:
+                out = F.dropout(out, p=dropout, training=self.training)
+            out = conv(out.transpose(1,2)).transpose(1,2)
+            #out = self.layer_dropout(out, res, dropout*float(l)/total_layers)
+            out = self.spatial_dropout(out) + res
+            l += 1
+            
+        #out = self.transformer_encoder(x.permute(1,0,2), src_key_padding_mask = mask).permute(1,0,2)
+        res = out
+        out = self.norm_1(out)
+        out = F.dropout(out, p=dropout, training=self.training)
+        out = self.multihead_attn(out.permute(1,0,2), out.permute(1,0,2), out.permute(1,0,2), key_padding_mask = mask)[0].permute(1,0,2)#.transpose(1,2)
+        out = self.spatial_dropout(out) + res
+        #out = self.layer_dropout(out, res, dropout*float(l)/total_layers)
+        l += 1
+        res = out
+        out = self.norm_2(out)
+        out = F.dropout(out, p=dropout, training=self.training)
+        out = self.FFN_1(out)
+        out = self.FFN_2(out)
+        out = self.spatial_dropout(out) + res
+        #out = self.layer_dropout(out, res, dropout*float(l)/total_layers)
+        
+        
+        return out
+
+    def layer_dropout(self, inputs, residual, dropout):
+        if self.training == True:
+            pred = torch.empty(1).uniform_(0,1) < dropout
+            if pred:
+                return residual
+            else:
+                return F.dropout(inputs, dropout, training=self.training) + residual
+        else:
+            return inputs + residual
+            
+"""
