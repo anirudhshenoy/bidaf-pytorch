@@ -168,9 +168,19 @@ class BiDAF(nn.Module):
 
 
         # 4. Attention Flow Layer
-        self.att_weight_c = ResizeConv(self.hidden_size, 1)
-        self.att_weight_q = ResizeConv(self.hidden_size, 1)
-        self.att_weight_cq = ResizeConv(self.hidden_size, 1)
+        self.att_weight_c = torch.empty(self.hidden_size, 1)
+        self.att_weight_q = torch.empty(self.hidden_size, 1)
+        self.att_weight_cq = torch.empty(1, 1, self.hidden_size)
+        nn.init.xavier_uniform_(self.att_weight_c )
+        nn.init.xavier_uniform_(self.att_weight_q)
+        nn.init.xavier_uniform_(self.att_weight_cq)
+        self.att_weight_c  = nn.Parameter(self.att_weight_c )
+        self.att_weight_q = nn.Parameter(self.att_weight_q)
+        self.att_weight_cq = nn.Parameter(self.att_weight_cq)
+        
+        self.att_bias = torch.empty(1)
+        nn.init.constant_(self.att_bias, 0)
+        self.att_bias = nn.Parameter(self.att_bias)
         
         # Modelling transformer
         self.resize_g_matrix = ResizeConv(self.hidden_size * 4 , self.hidden_size)
@@ -222,7 +232,9 @@ class BiDAF(nn.Module):
             # (batch, seq_len, hidden_size * 2)
             return x
 
-        def att_flow_layer(c, q):
+        def att_flow_layer(c, q, c_mask, q_mask):
+            
+            # https://github.com/andy840314/QANet-pytorch-/blob/master/models.py
             """
             :param c: (batch, c_len, hidden_size * 2)
             :param q: (batch, q_len, hidden_size * 2)
@@ -232,34 +244,48 @@ class BiDAF(nn.Module):
             # Add bias ? 
             c_len = c.size(1)
             q_len = q.size(1)
+            
+            batch_size = c.size(0)
 
             # CALCULATE SIMILARITY MATRIX
-            cq = []
-            for i in range(q_len):
-                #(batch, 1, hidden_size * 2)
-                qi = q.select(1, i).unsqueeze(1)
-                #(batch, c_len, 1)
-                ci = self.att_weight_cq(c * qi).squeeze()
-                cq.append(ci)
-            # (batch, c_len, q_len)
-            cq = torch.stack(cq, dim=-1)
+            #cq = []
+            #for i in range(q_len):
+            #    #(batch, 1, hidden_size * 2)
+            #    qi = q.select(1, i).unsqueeze(1)
+            #    #(batch, c_len, 1)
+            #    ci = self.att_weight_cq(c * qi).squeeze()
+            #    cq.append(ci)
+            ### (batch, c_len, q_len)
+            #cq = torch.stack(cq, dim=-1)
+            
+            
+            
+            cq = torch.matmul(c * self.att_weight_cq, q.transpose(1,2))
+            s_sub_1 = torch.matmul(c, self.att_weight_c).expand(-1, -1, q_len)
+            s_sub_2 = torch.matmul(q, self.att_weight_q).permute(0, 2, 1).expand(-1, c_len, -1)
+
 
             # (batch, c_len, q_len)
-            s = self.att_weight_c(c).expand(-1, -1, q_len) + \
-                self.att_weight_q(q).permute(0, 2, 1).expand(-1, c_len, -1) + \
-                cq
+            s = s_sub_1 + s_sub_2 + cq + self.att_bias
 
-            # (batch, c_len, q_len)
-            a = F.softmax(s, dim=2)
+            # (batch, c_len, q_len)           
+            c_mask = c_mask.view(batch_size, c_len, 1)
+            q_mask = q_mask.view(batch_size, 1, q_len)
+
+            
+            S1 = F.softmax(mask_logits(s, q_mask), dim=2)
+            S2 = F.softmax(mask_logits(s, c_mask), dim=1)
+
             # (batch, c_len, q_len) * (batch, q_len, hidden_size * 2) -> (batch, c_len, hidden_size * 2)
-            c2q_att = torch.bmm(a, q)
+            c2q_att = torch.bmm(S1, q)
             # (batch, 1, c_len)
-            b = F.softmax(torch.max(s, dim=2)[0], dim=1).unsqueeze(1)
+            #b = F.softmax(torch.max(s, dim=2)[0], dim=1).unsqueeze(1)
             # (batch, 1, c_len) * (batch, c_len, hidden_size * 2) -> (batch, hidden_size * 2)
-            q2c_att = torch.bmm(b, c).squeeze()
+            #q2c_att = torch.bmm(b, c).squeeze()
             # (batch, c_len, hidden_size * 2) (tiled)
-            q2c_att = q2c_att.unsqueeze(1).expand(-1, c_len, -1)
+            #q2c_att = q2c_att.unsqueeze(1).expand(-1, c_len, -1)
             # q2c_att = torch.stack([q2c_att] * c_len, dim=1)
+            q2c_att = torch.bmm(torch.bmm(S1, S2.transpose(1, 2)), c)
             
             x = torch.cat([c, c2q_att, c * c2q_att, c * q2c_att], dim=2)
             x = self.resize_g_matrix(x)
@@ -316,10 +342,7 @@ class BiDAF(nn.Module):
         #print("question size after encoder block: {}".format(q.size()))
     
         # 4. Attention Flow Layer
-        
-        print(c.size())
-        print(q.size())
-        g = att_flow_layer(c, q)
+        g = att_flow_layer(c, q, c_mask, q_mask)
         
         #print("G matrix size: {}".format(g.size()))
         
