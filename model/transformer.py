@@ -11,10 +11,12 @@ from utils.nn import LSTM, Linear
 
 # https://github.com/andy840314/QANet-pytorch-/blob/master/models.py
 def PosEncoder(x, min_timescale=1.0, max_timescale=1.0e4):
+    x = x.transpose(1,2)
+
     length = x.size()[1]
     channels = x.size()[2]
     signal = get_timing_signal(length, channels, min_timescale, max_timescale)
-    return (x + signal.cuda())
+    return (x + signal.cuda()).transpose(1,2)
 
 def get_timing_signal(length, channels, min_timescale=1.0, max_timescale=1.0e4):
     position = torch.arange(length).type(torch.float32)
@@ -69,7 +71,7 @@ class EncoderBlock(nn.Module):
         self.dropout = nn.Dropout(p=0.1)
 
 
-    def forward(self, x):
+    def forward(self, x, mask):
         x = PosEncoder(x)
         for conv, layer_norm in zip(self.convs, self.conv_layer_norms):
             residual = x
@@ -82,7 +84,7 @@ class EncoderBlock(nn.Module):
             x = self.dropout(x)
             
         # Encoder input is (seq_len, batch_size, embed_dim)
-        x = self.transformer_encoder(x.permute(1,0,2)).permute(1,0,2)
+        x = self.transformer_encoder(x.permute(1,0,2), src_key_padding_mask = mask).permute(1,0,2)
         return x
     
 class ResizeConv(nn.Module):
@@ -160,9 +162,9 @@ class BiDAF(nn.Module):
         # Embedding Conv
 
         # Transformer
-        self.embedding_encoder_block = EncoderBlock(4, self.hidden_size, 7, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True)
+        self.embedding_encoder_block = EncoderBlock(4, self.hidden_size, 7, attn_heads = 1, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True)
         
-        self.model_encoder_block = nn.ModuleList([EncoderBlock(2, self.hidden_size, 5, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True) for _ in range(7)] )
+        self.model_encoder_block = nn.ModuleList([EncoderBlock(2, self.hidden_size, 5, attn_heads = 1, encoder_hidden_layer_size = self.encoder_hidden_layer_size, is_depthwise = True) for _ in range(7)] )
 
 
         # 4. Attention Flow Layer
@@ -282,6 +284,8 @@ class BiDAF(nn.Module):
         c_char = char_emb_layer(batch.c_char)
         q_char = char_emb_layer(batch.q_char)
         # 2. Word Embedding Layer
+        c_mask = torch.ones_like(batch.c_word[0]) == batch.c_word[0]
+        q_mask = torch.ones_like(batch.q_word[0]) == batch.q_word[0]
         c_word = self.word_emb(batch.c_word[0])
         q_word = self.word_emb(batch.q_word[0])
         c_word = self.dropout(c_word)
@@ -303,8 +307,8 @@ class BiDAF(nn.Module):
         #print("context size after highway: {}".format(c.size()))
         #print("question size after highway : {}".format(q.size()))
         
-        c = self.embedding_encoder_block(c)
-        q = self.embedding_encoder_block(q)
+        c = self.embedding_encoder_block(c, c_mask)
+        q = self.embedding_encoder_block(q, q_mask)
         #print("context size after encoder block: {}".format(c.size()))
         #print("question size after encoder block: {}".format(q.size()))
     
@@ -315,17 +319,17 @@ class BiDAF(nn.Module):
         
         M0 = self.dropout(g)
         for model_enc in self.model_encoder_block:
-            M0 = model_enc(M0)
+            M0 = model_enc(M0, c_mask)
         #print("model_op 0 size: {}".format(enc_op_0.size()))
         
         M1 = M0
         for model_enc in self.model_encoder_block:
-            M0 = model_enc(M0)
+            M0 = model_enc(M0, c_mask)
         #print("model_op 1 size: {}".format(enc_op_1.size()))
         
         M2 = self.dropout(M0)
         for model_enc in self.model_encoder_block:
-            M0 = model_enc(M0)
+            M0 = model_enc(M0, c_mask)
         #print("model_op 2 size: {}".format(enc_op_2.size()))
 
         M3 = M0
